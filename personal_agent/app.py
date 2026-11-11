@@ -121,7 +121,7 @@ async def state():
             'settings':{'model':cfg['model'],'provider':urlsplit(cfg['base_url']).hostname,
                 'buffer_seconds':cfg['buffer_seconds'],'daily_time':cfg['daily_time'],'daily_timezone':cfg['daily_timezone'],'daily_enabled':cfg['daily_enabled'],'data_dir':str(get_context().data_dir)},
             'service_status':{'model':bool(cfg['api_key']),'vision':bool(cfg['vision_key']),
-                              'transcription':bool(cfg['groq_key']),'search':bool(cfg['brave_key'])},
+                              'transcription':bool(cfg['groq_key']),'search':bool(cfg['brave_key'] or (cfg['api_key'] and urlsplit(cfg['base_url']).hostname=='api.deepseek.com'))},
             'pending':{c['id']:engine.state(c['id']) for c in store.channels()}}
 
 @app.get('/api/messages')

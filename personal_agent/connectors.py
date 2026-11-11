@@ -80,7 +80,7 @@ def _response_ok(response, label="服务"):
     raise ServiceError(f"{label}{reason}（HTTP {code}）。")
 
 
-def _public_url(url):
+def _public_url(url, *, resolve=True):
     """Only public HTTP URLs are source material; model/MCP endpoints are separate."""
     try:
         p = urlsplit(str(url).strip())
@@ -92,10 +92,12 @@ def _public_url(url):
         try:
             addresses = [ipaddress.ip_address(host)]
         except ValueError:
-            try:
-                addresses = [ipaddress.ip_address(v[4][0]) for v in socket.getaddrinfo(host, None)]
-            except socket.gaierror:
-                addresses = []  # The configured proxy may resolve public DNS itself.
+            addresses = []
+            if resolve:
+                try:
+                    addresses = [ipaddress.ip_address(v[4][0]) for v in socket.getaddrinfo(host, None)]
+                except socket.gaierror:
+                    addresses = []  # The configured proxy may resolve public DNS itself.
         if any(not address.is_global for address in addresses):
             raise ValueError()
         return str(url).strip()
@@ -174,6 +176,7 @@ class Services:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._media_slots = asyncio.Semaphore(2)
         self._brave_retry_after = 0.0
+        self._deepseek_search_retry_after = 0.0
 
     def _cache(self, key, producer, ttl=86400):
         path = self.cache_dir / (hashlib.sha256(key.encode()).hexdigest() + ".json")
@@ -243,7 +246,16 @@ class Services:
 
     async def read_url(self, url):
         try:
-            url = await asyncio.to_thread(_public_url, url)
+            host = (urlsplit(str(url)).hostname or '').lower()
+            delegated = bool(self.config.get('tikhub_key')) and host in {
+                'mp.weixin.qq.com','bilibili.com','www.bilibili.com','m.bilibili.com','b23.tv',
+                'youtube.com','www.youtube.com','m.youtube.com','youtu.be',
+                'xiaohongshu.com','www.xiaohongshu.com','xhslink.com','xhslink.cn',
+                'x.com','www.x.com','twitter.com','www.twitter.com'}
+            # The platform API reads these known public sites remotely. Local
+            # poisoned DNS must not block a request that only contacts that API.
+            # Any direct download, including fallbacks, still validates DNS.
+            url = await asyncio.to_thread(_public_url, url, resolve=not delegated)
             return await asyncio.to_thread(self._cache, "url-v1:" + url, lambda: self._read_url(url))
         except Exception as exc:
             return {"title": "链接", "url": str(url), "text": "", "scope": "unavailable", "status": "error", "error": _network_error(exc)}
@@ -266,7 +278,13 @@ class Services:
                 platform_error = "平台未返回可用正文或字幕。"
         else:
             platform_error = "未连接平台解析服务。"
-        data, mime, final_url, encoding = _download(url)
+        try:
+            data, mime, final_url, encoding = _download(url)
+        except Exception as exc:
+            if not platform:
+                raise
+            return {"title": platform, "url": url, "text": "", "scope": "metadata", "status": "partial",
+                    "error": platform_error + " 网页读取也未完成：" + _network_error(exc)}
         if "pdf" in mime or urlsplit(final_url).path.lower().endswith(".pdf"):
             from pypdf import PdfReader
             reader = PdfReader(io.BytesIO(data))
@@ -405,7 +423,17 @@ class Services:
                 except Exception as exc:
                     result["error"] = _network_error(exc)
         elif platform == "youtube":
-            data = self._tikhub("/api/v1/youtube/web_v2/get_video_info_v2", {"video_url": url})
+            address = urlsplit(url)
+            candidate = (parse_qs(address.query).get('v') or [''])[0] or address.path.rstrip('/').split('/')[-1]
+            video_id = candidate if re.fullmatch(r'[A-Za-z0-9_-]{11}', candidate) else ''
+            data = {}
+            if video_id:
+                try:
+                    data = self._tikhub("/api/v1/youtube/web_v2/get_video_info", {"video_id": video_id, "need_format": True})
+                except ServiceError:
+                    pass
+            if not data.get('title'):
+                data = self._tikhub("/api/v1/youtube/web_v2/get_video_info_v2", {"video_url": url})
             result.update(title=data.get("title", "YouTube 视频"), text=data.get("description", ""),
                           scope="video_description", author=data.get("author", ""), duration=data.get("length_seconds"))
             vid = data.get("video_id")
@@ -571,6 +599,26 @@ class Services:
             return []
         def search():
             reason = "未连接搜索 API。"
+            native_deepseek = (urlsplit(self.config.get("base_url", "")).hostname == "api.deepseek.com"
+                               and self.config.get("api_key"))
+            if native_deepseek and time.monotonic() >= self._deepseek_search_retry_after:
+                try:
+                    response = requests.post("https://api.deepseek.com/v1/tools/search",
+                        json={"query": query[:128], "count": 8, "need_content": False},
+                        headers={"Authorization": "Bearer " + self.config["api_key"], "Content-Type": "application/json"},
+                        timeout=(15, 40), allow_redirects=False)
+                    _response_ok(response, "DeepSeek 搜索服务")
+                    rows = [{"title": item.get("title", ""), "url": item.get("url", ""),
+                             "description": item.get("snippet") or item.get("summary", ""),
+                             "date": item.get("date"), "provider": "deepseek", "scope": "search_result"}
+                            for item in response.json().get("results", [])[:8]
+                            if isinstance(item, dict) and item.get("url")]
+                    if rows:
+                        return rows
+                    reason = "搜索服务没有返回结果。"
+                except Exception as exc:
+                    reason = _network_error(exc)
+                    self._deepseek_search_retry_after = time.monotonic() + 300
             if self.config.get("brave_key") and time.monotonic() >= self._brave_retry_after:
                 try:
                     response = requests.get("https://api.search.brave.com/res/v1/web/search",
