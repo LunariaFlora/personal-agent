@@ -54,9 +54,19 @@ def get_import_status(library_id:str,job_id:str)->dict:
 
 
 @server.tool()
-def find_original_messages(library_id:str,query:str='',offset:int=0,limit:int=50)->dict:
-    """搜索或按时间分页查看已导入的原聊天，可查转发正文；返回真实消息 ID、原时间、作者和引用。"""
-    return api('GET','/api/imports/messages',library_id,params={'q':query,'offset':offset,'limit':limit})
+def find_original_messages(library_id:str,query:str='',offset:int=0,limit:int=50,include_content:bool=False)->dict:
+    """搜索或按时间分页查看原聊天。默认返回短预览、真实 ID、作者与时间；读全文和引用用 read_original_context，或设 include_content=true。"""
+    result=api('GET','/api/imports/messages',library_id,params={'q':query,'offset':offset,'limit':min(200,max(1,limit))})
+    if not include_content:
+        previews=[]
+        for row in result.get('messages',[]):
+            meta=row.get('meta') or {}
+            previews.append({k:row.get(k) for k in ('id','created_at','status','reply_to')}|{
+                'preview':row.get('content','')[:500],
+                'meta':{'provenance':meta.get('provenance',{}),'source_kind':meta.get('source_kind','')},
+                'attachment_count':len(row.get('attachment_ids',[]))})
+        result['messages']=previews
+    return result
 
 
 @server.tool()
@@ -79,9 +89,15 @@ def read_original_context(library_id:str,message_id:str,radius:int=2)->dict:
 
 
 @server.tool()
-def search_notes(library_id:str,query:str='')->dict:
-    """搜索长期笔记，返回正文、原文及可回溯的原消息 ID。"""
-    return api('GET','/api/notes',library_id,params={'q':query})
+def search_notes(library_id:str,query:str='',offset:int=0,limit:int=25,include_content:bool=False)->dict:
+    """搜索长期笔记，默认分页返回短预览和来源 ID。用 read_note 读正文/原对话，或设 include_content=true。"""
+    result=api('GET','/api/notes',library_id,params={'q':query})
+    notes=result.get('notes',[]);offset=max(0,offset);limit=min(100,max(1,limit))
+    selected=notes[offset:offset+limit]
+    if not include_content:
+        selected=[{k:n.get(k) for k in ('id','title','category','kind','tags','source_ids','updated_at','revision')}|
+                  {'preview':n.get('body','')[:600]} for n in selected]
+    return {**result,'notes':selected,'offset':offset,'total':len(notes),'has_more':offset+limit<len(notes)}
 
 
 @server.tool()

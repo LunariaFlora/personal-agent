@@ -195,7 +195,7 @@ class Store:
         with self._db() as db:
             return [dict(row) for row in db.execute("SELECT * FROM channels ORDER BY rowid")]
 
-    def messages(self, channel, limit=100, before=None):
+    def messages(self, channel, limit=100, before=None, include_archived=True):
         limit = max(1, min(100_000, int(limit)))
         with self._db() as db:
             self._channel(db, channel)
@@ -216,7 +216,8 @@ class Store:
                         raise ValueError("分页位置不存在") from None
                     clause = " AND created_at<?"
                     params.append(before)
-            rows = db.execute("SELECT * FROM messages WHERE channel=?" + clause + " ORDER BY seq DESC LIMIT ?", (*params, limit)).fetchall()
+            archive_clause = "" if include_archived else " AND status<>'archived'"
+            rows = db.execute("SELECT * FROM messages WHERE channel=?" + clause + archive_clause + " ORDER BY seq DESC LIMIT ?", (*params, limit)).fetchall()
             return [self._decode(row) for row in reversed(rows)]
 
     def add_message(self, channel, role, content, reply_to=None, attachment_ids=None, status="done", meta=None):

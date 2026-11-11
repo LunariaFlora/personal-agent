@@ -126,7 +126,7 @@ async def state():
 
 @app.get('/api/messages')
 async def messages(channel:str='inbox',before:str|None=None,limit:int=100):
-    return {'messages':store.messages(channel,limit=min(limit,300),before=before),'pending':engine.state(channel)}
+    return {'messages':store.messages(channel,limit=min(limit,300),before=before,include_archived=False),'pending':engine.state(channel)}
 
 @app.get('/api/messages/{id}')
 async def message_by_id(id:str):return {'message':existing(store.get_message(id))}

@@ -277,8 +277,16 @@ function renderNoteDetail(){
   else renderNoteSources(n,area);
 }
 
-function sourceAuthor(message){const p=message.meta?.provenance||{};return p.sender_name||message.sender_name||message.author||(message.role==='assistant'?'Agent':p.is_self===false?'原作者':'我');}
-function sourceTime(value){if(/^\d{10,13}$/.test(String(value)))value=Number(value)*(String(value).length<=10?1000:1);return date(value,{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});}
+function sourceAuthor(message,preferSelf=false){const p=message.meta?.provenance||{};if(preferSelf&&p.is_self===true)return '我';return p.sender_name||message.sender_name||message.author||(message.role==='assistant'?'Agent':p.is_self===false?'原作者':'我');}
+function sourceTime(value){
+  const raw=String(value||'');if(!raw)return '';
+  if(/^\d{10,13}$/.test(raw))value=Number(value)*(raw.length<=10?1000:1);
+  else if(!/(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(raw))return raw;
+  const time=new Date(value);if(!Number.isFinite(time.getTime()))return date(value);
+  const offset=-time.getTimezoneOffset(),absolute=Math.abs(offset);const zone=`UTC${offset<0?'-':'+'}${String(Math.floor(absolute/60)).padStart(2,'0')}:${String(absolute%60).padStart(2,'0')}`;
+  return date(value,{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'})+' '+zone;
+}
+function sourceTimestamp(value){return el('time',{title:value||''},sourceTime(value));}
 function sourceText(value,limit=1400){
   const text=String(value||'');const body=el('div',{class:'source-raw'},text.length>limit?text.slice(0,limit)+'…':text);
   if(text.length<=limit)return body;
@@ -299,11 +307,11 @@ function sourceContent(message,limit=1400){
   if(share.user_text)content.append(el('div',{class:'source-user-text'},el('span',{class:'source-share-label'},'附言'),sourceText(share.user_text,limit)));
   return content;
 }
-function sourceQuote(value){return el('div',{class:'source-quote'},el('div',{class:'source-author'},value.sender_name||value.author||'引用消息',value.time?el('time',{},sourceTime(value.time)):null),sourceContent(value,260));}
+function sourceQuote(value){return el('div',{class:'source-quote'},el('div',{class:'source-author'},value.sender_name||value.author||'引用消息',value.time?sourceTimestamp(value.time):null),sourceContent(value,260));}
 function sourceForwarded(items,depth=0){
   const forwarded=el('div',{class:'source-forwarded'},el('h4',{},'转发的聊天记录'));
   function renderItem(item){
-    const child=el('div',{class:'forwarded-message'},el('div',{class:'source-author'},el('strong',{},item.sender_name||item.author||'原作者'),el('time',{},sourceTime(item.time||item.created_at))),item.quote?sourceQuote(item.quote):null,sourceContent(item));
+    const child=el('div',{class:'forwarded-message'},el('div',{class:'source-author'},el('strong',{},item.sender_name||item.author||'原作者'),sourceTimestamp(item.time||item.created_at)),item.quote?sourceQuote(item.quote):null,sourceContent(item));
     if(item.attachment_ids?.length){const files=el('div',{class:'attachment-list'});child.append(files);for(const id of item.attachment_ids)attachNode(id,files);}
     if(item.forwarded?.length&&depth<8)child.append(sourceForwarded(item.forwarded,depth+1));
     return child;
@@ -315,8 +323,8 @@ function sourceForwarded(items,depth=0){
 function sourceMessage(message,focused,byId,referenced=false){
   const provenance=message.meta?.provenance||{};const quote=message.reply_to?byId.get(message.reply_to):null;
   const row=el('article',{class:'source-message'+(focused?' focused':''),'data-source-id':message.id},
-    el('div',{class:'source-author'},el('strong',{},sourceAuthor(message)),el('time',{},sourceTime(message.created_at)),focused?el('span',{class:'tag'},'笔记来源'):referenced?el('span',{class:'tag'},'引用消息'):null),
-    quote?sourceQuote({...quote,sender_name:sourceAuthor(quote),time:quote.created_at}):message.meta?.quote?sourceQuote(message.meta.quote):null,
+    el('div',{class:'source-author'},el('strong',{},sourceAuthor(message,true)),sourceTimestamp(message.created_at),focused?el('span',{class:'tag'},'笔记来源'):referenced?el('span',{class:'tag'},'引用消息'):null),
+    quote?sourceQuote({...quote,sender_name:sourceAuthor(quote,true),time:quote.created_at}):message.meta?.quote?sourceQuote(message.meta.quote):null,
     sourceContent(message));
   if(message.attachment_ids?.length){const attachments=el('div',{class:'attachment-list'});row.append(attachments);for(const id of message.attachment_ids)attachNode(id,attachments);}
   const missing=(message.meta?.media_status||[]).filter(item=>item.status==='missing').length;
@@ -451,8 +459,8 @@ async function boot(){
     const available=await api('/api/libraries');S.libraries=available.libraries||[];
     const requested=params.get('library')||remembered||available.selected_id;
     S.libraryId=S.libraries.some(l=>l.id===requested)?requested:available.selected_id;rememberLibrary(S.libraryId);
-    await refreshState();renderSidebar();renderChat();await refreshMessages(true);
-    if(params.get('note'))await openNote(params.get('note'));else if(params.get('report'))await openReport(params.get('report'));else if(params.get('message'))await jumpToMessage(params.get('message'));
+    await refreshState();renderSidebar();
+    if(params.get('note'))await openNote(params.get('note'));else if(params.get('report'))await openReport(params.get('report'));else if(params.get('message'))await jumpToMessage(params.get('message'));else if(NAV.some(([view])=>view===params.get('view')))await navigate(params.get('view'));else{renderChat();await refreshMessages(true);}
   }catch(e){toast('暂时无法连接本地服务，请确认程序正在运行。',true);$('#connection-dot').className='connection-dot error';}
   setInterval(poll,1500);setInterval(updateBatch,1000);
 }
