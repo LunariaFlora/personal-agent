@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "personal-agent": {
+      "command": "D:\\AppData\\PersonalAgent\\runtime\\Scripts\\python.exe",
+      "args": ["-B", "-m", "personal_agent.mcp_server"],
+      "env": {
+        "PYTHONPATH": "D:\\Project\\我的personal agent",
+        "PYTHONIOENCODING": "utf-8",
+        "PERSONAL_AGENT_URL": "http://127.0.0.1:8765"
+      }
+    }
+  }
+}

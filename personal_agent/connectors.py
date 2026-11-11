@@ -279,6 +279,12 @@ class Services:
         html = _decode(data, encoding)
         result = self._article(html, final_url)
         if platform in ("bilibili", "youtube"):
+            # A video watch page contains recommendation lists and comments;
+            # those are not the requested video's transcript or description.
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, "html.parser")
+            description = soup.find('meta', attrs={'property':'og:description'}) or soup.find('meta', attrs={'name':'description'})
+            result['text'] = description.get('content','') if description else ''
             result.update(scope="video_description", status="partial", error=platform_error + " 当前仅取得网页简介，没有视频字幕或画面。")
         return self._bounded(result)
 

@@ -36,6 +36,7 @@ const CHANNELS = [
   {id:'transfer',title:'文件传输',description:'存放文件与临时文字',mode:'transfer'},
 ];
 const S={view:'chat',channel:'inbox',channels:CHANNELS,stats:{},settings:{},pending:{},messages:[],messageHash:'',historyLoaded:false,historyEnd:false,attachments:new Map(),drafts:{},draftFiles:{},reply:null,notes:[],note:null,noteTab:'read',category:'',kind:'',query:'',reports:[],report:null,reportRunning:false,memories:[],polling:false,connected:false,activeRequest:0,toastTimer:null};
+Object.assign(S,{libraryId:null,library:null,libraries:[],libraryEpoch:0,switching:false,libraryDrafts:{}});
 const $=selector=>document.querySelector(selector);
 const main=$('#main'), sidebar=$('#sidebar'), dialog=$('#dialog');
 
@@ -60,13 +61,19 @@ function btn(label,click,cls='button',ico){return el('button',{type:'button',cla
 function ib(name,label,click){return el('button',{type:'button',class:'icon-button',title:label,'aria-label':label,onclick:click},icon(name));}
 function channelIcon(id){return {inbox:'inbox',chat:'chat',collect:'collect',transfer:'transfer'}[id]||'chat';}
 function channelTitle(id){return S.channels.find(c=>c.id===id)?.title||CHANNELS.find(c=>c.id===id)?.title||id;}
-function toast(message,error=false){const n=$('#toast');n.textContent=message;n.className='toast visible'+(error?' error':'');clearTimeout(S.toastTimer);S.toastTimer=setTimeout(()=>n.classList.remove('visible'),error?7000:3400);}
-function errorText(e){return String(e?.message||e||'操作失败').slice(0,450);}
+function toast(message,error=false){if(!message)return;const n=$('#toast');n.textContent=message;n.className='toast visible'+(error?' error':'');clearTimeout(S.toastTimer);S.toastTimer=setTimeout(()=>n.classList.remove('visible'),error?7000:3400);}
+function errorText(e){return e?.name==='LibraryChanged'?'':String(e?.message||e||'操作失败').slice(0,450);}
+function libraryChanged(){const error=new Error('资料库已切换');error.name='LibraryChanged';return error;}
+function libraryUrl(path,libraryId=S.libraryId){const url=new URL(path,location.origin);if(libraryId)url.searchParams.set('library',libraryId);return url.pathname+url.search+url.hash;}
 async function api(path,options={}){
+  const libraryId=S.libraryId,epoch=S.libraryEpoch;
   const opts={...options,headers:{...options.headers}};
+  if(libraryId)opts.headers['X-Personal-Library']=libraryId;
   if(opts.body&&!(opts.body instanceof FormData)){opts.headers['Content-Type']='application/json';opts.body=JSON.stringify(opts.body);}
-  const response=await fetch(path,opts);
+  let response;
+  try{response=await fetch(path,opts);}catch(error){if(libraryId!==S.libraryId||epoch!==S.libraryEpoch)throw libraryChanged();throw error;}
   let data={};try{data=await response.json();}catch{if(!response.ok)throw new Error(`请求失败（${response.status}）`);}
+  if(libraryId!==S.libraryId||epoch!==S.libraryEpoch)throw libraryChanged();
   if(!response.ok){const detail=data.detail||data.error||`请求失败（${response.status}）`;throw new Error(typeof detail==='string'?detail:JSON.stringify(detail));}
   return data;
 }
@@ -78,8 +85,9 @@ function safeUrl(value){try{const u=new URL(value,location.origin);return ['http
 function externalLink(label,url,cls=''){
   const href=safeUrl(url);if(!href)return el('span',{class:cls},label);
   const parsed=new URL(href);
-  if(parsed.origin===location.origin&&(parsed.searchParams.has('note')||parsed.searchParams.has('report'))){
-    return el('a',{href,class:cls,onclick:e=>{e.preventDefault();if(parsed.searchParams.has('note'))openNote(parsed.searchParams.get('note'));else openReport(parsed.searchParams.get('report'));}},label);
+  if(parsed.origin===location.origin&&['note','report','message'].some(key=>parsed.searchParams.has(key))){
+    const libraryId=parsed.searchParams.get('library')||S.libraryId;
+    return el('a',{href:libraryUrl(href,libraryId),class:cls,onclick:async e=>{e.preventDefault();if(libraryId!==S.libraryId)await switchLibrary(libraryId,false);if(parsed.searchParams.has('note'))openNote(parsed.searchParams.get('note'));else if(parsed.searchParams.has('message'))jumpToMessage(parsed.searchParams.get('message'));else openReport(parsed.searchParams.get('report'));}},label);
   }
   return el('a',{href,target:'_blank',rel:'noopener noreferrer',class:cls},label);
 }
@@ -147,7 +155,7 @@ async function navigate(view){
     else if(view==='daily'){main.replaceChildren(head('每日来信',''),el('div',{class:'busy-line'},'正在读取日报…'));await loadReports();}
     else if(view==='memory'){main.replaceChildren(head('长期记忆',''),el('div',{class:'busy-line'},'正在读取记忆…'));await loadMemories();}
     else await renderSettings();
-  }catch(e){main.replaceChildren(head(NAV.find(v=>v[0]===view)?.[1]||'', ''),empty('暂时没有读到内容',errorText(e),'refresh',btn('重试',()=>navigate(view),'button','refresh')));}
+  }catch(e){if(e.name!=='LibraryChanged')main.replaceChildren(head(NAV.find(v=>v[0]===view)?.[1]||'', ''),empty('暂时没有读到内容',errorText(e),'refresh',btn('重试',()=>navigate(view),'button','refresh')));}
 }
 function saveDraft(){const input=$('#composer-input');if(input)S.drafts[S.channel]=input.value;}
 async function selectChannel(id){saveDraft();S.channel=id;S.reply=null;S.messages=[];S.messageHash='';S.historyLoaded=false;S.historyEnd=false;renderSidebar();renderChat();await refreshMessages(true);}
@@ -175,7 +183,7 @@ function renderMessages(forceBottom=false){
   area.replaceChildren(frag);if(wasNearBottom||forceBottom)requestAnimationFrame(()=>area.scrollTop=area.scrollHeight);else area.scrollTop=oldTop;
 }
 function messageNode(m){
-  const isUser=m.role==='user';const bubble=el('div',{class:'bubble'});const wrap=el('div',{class:'msg-wrap'},el('div',{class:'msg-name'},`${isUser?'我':'Agent'} · ${date(m.created_at,{hour:'2-digit',minute:'2-digit'})}`),bubble);
+  const isUser=m.role==='user';const author=sourceAuthor(m);const bubble=el('div',{class:'bubble'});const wrap=el('div',{class:'msg-wrap'},el('div',{class:'msg-name'},`${author} · ${date(m.created_at,{hour:'2-digit',minute:'2-digit'})}`),bubble);
   if(m.reply_to){const ref=S.messages.find(x=>x.id===m.reply_to);bubble.append(el('button',{class:'reply-block',onclick:()=>jumpToMessage(m.reply_to)},ref?.content||'查看引用的消息'));}
   if(m.content)bubble.append(markdown(m.content));
   if(m.attachment_ids?.length){const list=el('div',{class:'attachment-list'});bubble.append(list);for(const id of m.attachment_ids)attachNode(id,list);}
@@ -193,13 +201,14 @@ function messageNode(m){
   if(m.status==='processing')actions.append(el('span',{class:'message-status'},'正在整理'));
   if(m.status==='error')actions.append(btn('重试',()=>flushMessages(),'','refresh'));
   wrap.append(actions);
-  const node=el('article',{class:'message '+(isUser?'user':'assistant')+(m.status==='error'?' error':''),id:'message-'+m.id,'data-id':m.id},el('div',{class:'msg-avatar'+(!isUser?' agent':'')},isUser?'我':icon('spark')),wrap);return node;
+  const node=el('article',{class:'message '+(isUser?'user':'assistant')+(m.status==='error'?' error':''),id:'message-'+m.id,'data-id':m.id},el('div',{class:'msg-avatar'+(!isUser?' agent':'')},isUser?author.slice(0,1):icon('spark')),wrap);return node;
 }
 async function attachNode(id,parent){
-  try{let a=S.attachments.get(id);if(!a){const r=await api('/api/attachments/'+encodeURIComponent(id));a=r.attachment||r;S.attachments.set(id,a);}const href='/api/files/'+encodeURIComponent(id);
+  const libraryId=S.libraryId;
+  try{let a=S.attachments.get(id);if(!a){const r=await api('/api/attachments/'+encodeURIComponent(id));a=r.attachment||r;S.attachments.set(id,a);}const href=libraryUrl('/api/files/'+encodeURIComponent(id),libraryId);
     if(a.mime?.startsWith('image/')){const img=el('img',{src:href,alt:a.name||'图片附件',class:'image-attachment',loading:'lazy',onclick:()=>window.open(href,'_blank','noopener')});parent.append(el('a',{href,target:'_blank',rel:'noopener',title:'打开原图'},img));}
     else parent.append(el('a',{href,download:a.name||'',class:'file-card'},icon('file'),el('div',{class:'file-copy'},el('div',{class:'file-name'},a.name||'附件'),el('div',{class:'file-size'},bytes(a.size)))));
-  }catch{parent.append(el('span',{class:'small muted'},'附件暂时无法读取'));}
+  }catch(e){if(e.name!=='LibraryChanged')parent.append(el('span',{class:'small muted'},'附件暂时无法读取'));}
 }
 function renderReply(){const area=$('#composer-reply');if(!area)return;area.replaceChildren();if(S.reply)area.append(el('div',{class:'composer-reply'},icon('reply'),el('span',{},S.reply.content||'附件消息'),ib('close','取消引用',()=>{S.reply=null;renderReply();})));}
 function renderPendingAttachments(){const area=$('#pending-attachments');if(!area)return;area.replaceChildren(...(S.draftFiles[S.channel]||[]).map(a=>el('div',{class:'attachment-chip'},icon('file'),el('span',{},a.name),el('button',{title:'移除附件','aria-label':'移除附件 '+a.name,onclick:()=>{S.draftFiles[S.channel]=S.draftFiles[S.channel].filter(v=>v.id!==a.id);renderPendingAttachments();}},'×'))));}
@@ -210,12 +219,12 @@ async function uploadFiles(files){
 let sending=false;
 async function sendMessage(){
   const input=$('#composer-input');if(!input||sending)return;const content=input.value.trim();const channel=S.channel;const files=S.draftFiles[channel]||[];if(!content&&!files.length){input.focus();return;}
-  const reply=S.reply;input.value='';input.style.height='auto';S.drafts[channel]='';S.draftFiles[channel]=[];S.reply=null;renderReply();renderPendingAttachments();sending=true;
+  const libraryId=S.libraryId;const reply=S.reply;input.value='';input.style.height='auto';S.drafts[channel]='';S.draftFiles[channel]=[];S.reply=null;renderReply();renderPendingAttachments();sending=true;
   try{const r=await api('/api/messages',{method:'POST',body:{channel,content,reply_to:reply?.id||null,attachment_ids:files.map(x=>x.id)}});if(r.pending)S.pending[channel]=r.pending;if(S.channel===channel&&S.view==='chat')await refreshMessages(true);await refreshState();}
-  catch(e){S.drafts[channel]=content;S.draftFiles[channel]=files;if(S.channel===channel&&S.view==='chat'){input.value=content;renderPendingAttachments();S.reply=reply;renderReply();}toast(errorText(e),true);}
+  catch(e){if(libraryId!==S.libraryId||e.name==='LibraryChanged')return;S.drafts[channel]=content;S.draftFiles[channel]=files;if(S.channel===channel&&S.view==='chat'){input.value=content;renderPendingAttachments();S.reply=reply;renderReply();}toast(errorText(e),true);}
   finally{sending=false;input?.focus();}
 }
-async function flushMessages(button){await action(button,async()=>{const input=$('#composer-input');if(input?.value.trim()||(S.draftFiles[S.channel]||[]).length)await sendMessage();const r=await api('/api/flush',{method:'POST',body:{channel:S.channel}});if(r.pending)S.pending[S.channel]=r.pending;await refreshMessages();updateBatch();toast('收到，开始一起整理');});}
+async function flushMessages(button){await action(button,async()=>{const libraryId=S.libraryId;const input=$('#composer-input');if(input?.value.trim()||(S.draftFiles[S.channel]||[]).length)await sendMessage();if(libraryId!==S.libraryId)throw libraryChanged();const r=await api('/api/flush',{method:'POST',body:{channel:S.channel}});if(r.pending)S.pending[S.channel]=r.pending;await refreshMessages();updateBatch();toast('收到，开始一起整理');});}
 function updateBatch(){
   const status=$('#batch-status');if(!status)return;const p=S.pending[S.channel]||{};
   if(S.channel==='transfer'){status.replaceChildren();return;}
@@ -234,7 +243,7 @@ async function loadOlderMessages(button){await action(button,async()=>{
   const r=await api('/api/messages?channel='+encodeURIComponent(channel)+'&before='+encodeURIComponent(S.messages[0].id));if(channel!==S.channel)return;
   const ids=new Set(S.messages.map(m=>m.id));S.messages=[...(r.messages||[]).filter(m=>!ids.has(m.id)),...S.messages];S.historyLoaded=true;S.historyEnd=(r.messages||[]).length<100;S.messageHash=JSON.stringify(S.messages);renderMessages();requestAnimationFrame(()=>area.scrollTop=top+(area.scrollHeight-height));
 });}
-async function refreshState(){const r=await api('/api/state');const old=JSON.stringify([S.stats,S.pending]);S.stats=r.stats||{};S.settings={...S.settings,...r.settings};S.pending=r.pending||S.pending;if(r.channels?.length)S.channels=r.channels;S.connected=true;$('#connection-dot').className='connection-dot connected';$('#connection-dot').title='已连接本地服务';if(old!==JSON.stringify([S.stats,S.pending])&&S.view==='chat')renderSidebar();return r;}
+async function refreshState(){const r=await api('/api/state');const old=JSON.stringify([S.stats,S.pending]);S.stats=r.stats||{};S.settings={...S.settings,...r.settings};S.pending=r.pending||S.pending;if(r.library){S.library=r.library;document.title='我的 Personal Agent · '+r.library.title;}if(r.channels?.length)S.channels=r.channels;S.connected=true;$('#connection-dot').className='connection-dot connected';$('#connection-dot').title='已连接本地服务';if(old!==JSON.stringify([S.stats,S.pending])&&S.view==='chat')renderSidebar();return r;}
 async function jumpToMessage(id){
   if(!id)return;dialog.close();
   let target=S.messages.find(m=>m.id===id);if(!target){try{const r=await api('/api/messages/'+encodeURIComponent(id));target=r.message||r;}catch{toast('原消息暂时无法读取',true);return;}}const channel=target?.channel;
@@ -262,10 +271,83 @@ function renderNoteDetail(){
   const area=$('#note-detail');if(!area)return;const n=S.note;
   if(!n){area.replaceChildren(empty('每一条，都有来处','选择一篇笔记查看正文、原始内容和相关聊天。','note'));return;}
   if(S.noteTab==='edit'){area.replaceChildren(noteEditor(n));return;}
-  const buttons=[ib('edit','编辑笔记',()=>{S.noteTab='edit';renderNoteDetail();}),el('a',{class:'icon-button',href:'/api/notes/'+encodeURIComponent(n.id)+'/export',download:'',title:'导出 Markdown','aria-label':'导出 Markdown'},icon('download')),ib('trash','归档笔记',()=>archiveNote(n))];
+  const buttons=[ib('edit','编辑笔记',()=>{S.noteTab='edit';renderNoteDetail();}),el('a',{class:'icon-button',href:libraryUrl('/api/notes/'+encodeURIComponent(n.id)+'/export'),download:'',title:'导出 Markdown','aria-label':'导出 Markdown'},icon('download')),ib('trash','归档笔记',()=>archiveNote(n))];
   area.replaceChildren(el('div',{class:'note-detail-head'},el('div',{},el('h2',{},n.title),el('div',{class:'note-detail-meta'},el('span',{},n.category||'收件箱'),el('span',{},'更新于 '+date(n.updated_at,{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})),...(n.tags||[]).map(t=>el('span',{class:'tag'},t)))),el('div',{class:'head-actions'},buttons)),el('div',{class:'tabs'},btn('整理后的笔记',()=>{S.noteTab='read';renderNoteDetail();},'tab'+(S.noteTab==='read'?' active':'')),btn('原文与来源',()=>{S.noteTab='source';renderNoteDetail();},'tab'+(S.noteTab==='source'?' active':''))));
   if(S.noteTab==='read')area.append(el('div',{class:'note-body'},markdown(n.body||'还没有整理后的正文。')));
-  else{area.append(el('h3',{},'原始内容'),n.original?el('div',{class:'original'},n.original):el('p',{class:'section-intro'},'这篇笔记没有单独的原文快照，可回到来源消息查看。'),el('h3',{},'来源'),el('div',{class:'source-links'},...(n.source_ids||[]).map((id,i)=>btn('来源消息 '+(i+1),()=>jumpToMessage(id),'source-link','chat')),n.source_url?externalLink('打开原始链接',n.source_url,'source-link'):null));if(!(n.source_ids||[]).length&&!n.source_url)area.append(el('p',{class:'small muted'},'手动创建的笔记'));}
+  else renderNoteSources(n,area);
+}
+
+function sourceAuthor(message){const p=message.meta?.provenance||{};return p.sender_name||message.sender_name||message.author||(message.role==='assistant'?'Agent':p.is_self===false?'原作者':'我');}
+function sourceTime(value){if(/^\d{10,13}$/.test(String(value)))value=Number(value)*(String(value).length<=10?1000:1);return date(value,{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});}
+function sourceText(value,limit=1400){
+  const text=String(value||'');const body=el('div',{class:'source-raw'},text.length>limit?text.slice(0,limit)+'…':text);
+  if(text.length<=limit)return body;
+  let expanded=false;const control=btn(`展开全文（${text.length.toLocaleString()} 字）`,()=>{expanded=!expanded;body.textContent=expanded?text:text.slice(0,limit)+'…';control.textContent=expanded?'收起全文':`展开全文（${text.length.toLocaleString()} 字）`;control.setAttribute('aria-expanded',String(expanded));},'text-button source-expand');
+  control.setAttribute('aria-expanded','false');return el('div',{class:'source-text'},body,control);
+}
+function sourceDisclosure(label,render,cls=''){
+  const details=el('details',{class:'source-disclosure '+cls},el('summary',{},label));let mounted=false;
+  details.addEventListener('toggle',()=>{if(details.open&&!mounted){mounted=true;details.append(render());}});return details;
+}
+function sourceContent(message,limit=1400){
+  const share=message.meta?.share||message.share;
+  if(!share)return sourceText(message.content||message.text||'',limit);
+  const card=el('div',{class:'source-share'},el('div',{class:'source-share-label'},icon('link'),'分享内容'),externalLink(share.title||'打开分享',share.url,'source-share-title'));
+  if(share.description)card.append(sourceText(share.description,500));
+  if(share.url)card.append(externalLink(share.url,share.url,'source-share-url'));
+  const content=el('div',{class:'source-content'},card);
+  if(share.user_text)content.append(el('div',{class:'source-user-text'},el('span',{class:'source-share-label'},'附言'),sourceText(share.user_text,limit)));
+  return content;
+}
+function sourceQuote(value){return el('div',{class:'source-quote'},el('div',{class:'source-author'},value.sender_name||value.author||'引用消息',value.time?el('time',{},sourceTime(value.time)):null),sourceContent(value,260));}
+function sourceForwarded(items,depth=0){
+  const forwarded=el('div',{class:'source-forwarded'},el('h4',{},'转发的聊天记录'));
+  function renderItem(item){
+    const child=el('div',{class:'forwarded-message'},el('div',{class:'source-author'},el('strong',{},item.sender_name||item.author||'原作者'),el('time',{},sourceTime(item.time||item.created_at))),item.quote?sourceQuote(item.quote):null,sourceContent(item));
+    if(item.attachment_ids?.length){const files=el('div',{class:'attachment-list'});child.append(files);for(const id of item.attachment_ids)attachNode(id,files);}
+    if(item.forwarded?.length&&depth<8)child.append(sourceForwarded(item.forwarded,depth+1));
+    return child;
+  }
+  items.slice(0,5).forEach(item=>forwarded.append(renderItem(item)));
+  if(items.length>5)forwarded.append(sourceDisclosure(`其余 ${items.length-5} 条转发`,()=>el('div',{},items.slice(5).map(renderItem))));
+  return forwarded;
+}
+function sourceMessage(message,focused,byId,referenced=false){
+  const provenance=message.meta?.provenance||{};const quote=message.reply_to?byId.get(message.reply_to):null;
+  const row=el('article',{class:'source-message'+(focused?' focused':''),'data-source-id':message.id},
+    el('div',{class:'source-author'},el('strong',{},sourceAuthor(message)),el('time',{},sourceTime(message.created_at)),focused?el('span',{class:'tag'},'笔记来源'):referenced?el('span',{class:'tag'},'引用消息'):null),
+    quote?sourceQuote({...quote,sender_name:sourceAuthor(quote),time:quote.created_at}):message.meta?.quote?sourceQuote(message.meta.quote):null,
+    sourceContent(message));
+  if(message.attachment_ids?.length){const attachments=el('div',{class:'attachment-list'});row.append(attachments);for(const id of message.attachment_ids)attachNode(id,attachments);}
+  const missing=(message.meta?.media_status||[]).filter(item=>item.status==='missing').length;
+  if(missing)row.append(el('p',{class:'source-media-missing'},icon('file'),`${missing} 个附件未能读取`));
+  if(message.meta?.forwarded?.length)row.append(sourceForwarded(message.meta.forwarded));
+  const conversation=[provenance.conversation_kind==='direct'?'私聊':'',provenance.conversation_title||''].filter(Boolean).join(' · ');
+  row.append(el('div',{class:'source-message-footer'},el('span',{},conversation),btn('回到这条消息',()=>jumpToMessage(message.id),'text-button','chat')));
+  return row;
+}
+async function renderNoteSources(note,area){
+  const libraryId=S.libraryId;const ids=note.source_ids||[];
+  if(note.source_url)area.append(el('div',{class:'source-links'},externalLink('打开原始链接',note.source_url,'source-link')));
+  const contextArea=el('section',{class:'source-context'},el('h3',{},'原始消息'),el('p',{class:'small muted',style:'margin:12px 0'},ids.length?'正在读取原始消息…':'这篇笔记没有关联聊天消息。'));
+  area.append(contextArea);
+  if(note.original)area.append(ids.length?sourceDisclosure('存档原文',()=>sourceText(note.original),'source-snapshot'):el('section',{class:'source-snapshot'},el('h3',{},'存档原文'),sourceText(note.original)));
+  if(!ids.length)return;
+  const results=await Promise.allSettled(ids.map(id=>api('/api/messages/'+encodeURIComponent(id)+'/context')));
+  if(S.libraryId!==libraryId||S.note?.id!==note.id||S.noteTab!=='source'||!area.isConnected)return;
+  const messages=new Map();const focus=new Set(ids);let unavailable=0;
+  for(const result of results){if(result.status==='fulfilled'){for(const m of result.value.messages||[])messages.set(m.id,m);if(result.value.focus_id)focus.add(result.value.focus_id);}else unavailable++;}
+  contextArea.replaceChildren(el('h3',{},'原始消息'));
+  const ordered=[...messages.values()].sort((a,b)=>String(a.created_at).localeCompare(String(b.created_at)));
+  const included=new Set(focus);
+  for(const id of focus){const traversed=new Set([id]);let current=messages.get(id);while(current?.reply_to&&!traversed.has(current.reply_to)){traversed.add(current.reply_to);included.add(current.reply_to);current=messages.get(current.reply_to);}}
+  for(const m of ordered.filter(m=>focus.has(m.id)))contextArea.append(sourceMessage(m,true,messages));
+  const references=ordered.filter(m=>included.has(m.id)&&!focus.has(m.id));
+  if(references.length)contextArea.append(el('section',{class:'source-references'},el('h4',{},'引用的消息'),references.map(m=>sourceMessage(m,false,messages,true))));
+  const nearby=ordered.filter(m=>!included.has(m.id));
+  if(nearby.length)contextArea.append(sourceDisclosure(`附近对话（${nearby.length} 条）`,()=>el('div',{class:'source-nearby'},nearby.map(m=>sourceMessage(m,false,messages))),'source-nearby-disclosure'));
+  if(unavailable)contextArea.append(el('p',{class:'inline-error'},`${unavailable} 处来源暂时无法读取，存档原文仍保留在下方。`));
+  if(!ordered.length&&!unavailable)contextArea.append(el('p',{class:'small muted'},'没有找到关联消息。'));
 }
 function kindSelect(value='note'){const s=el('select',{},[['note','笔记'],['judgment','我的判断'],['thought','想法'],['question','待探索'],['project','项目'],['idea','灵感'],['reference','参考资料'],['collection','收藏']].map(([v,l])=>el('option',{value:v},l)));if(![...s.options].some(o=>o.value===value))s.append(el('option',{value},value));s.value=value;return s;}
 function field(label,input,hint){const id=input.id||'field-'+Math.random().toString(36).slice(2);input.id=id;return el('div',{class:'editor-field'},el('label',{for:id},label),input,hint?el('p',{class:'field-hint'},hint):null);}
@@ -308,12 +390,14 @@ function deleteMemory(memory){showDialog('删除这条记忆？',el('p',{class:'
 
 async function renderSettings(){
   main.replaceChildren(head('设置',''),el('div',{class:'busy-line'},'正在读取配置…'));const r=await api('/api/settings');if(S.view!=='settings')return;const settings=r.settings||{};S.settings={...S.settings,...settings};const creds=r.credentials||{};
+  const librarySelect=el('select',{'aria-label':'当前资料库'},S.libraries.map(l=>el('option',{value:l.id},l.title)));librarySelect.value=S.libraryId;librarySelect.addEventListener('change',()=>switchLibrary(librarySelect.value));
   const model=el('input',{value:settings.model||'',placeholder:'模型名称'});const base=el('input',{type:'url',value:settings.base_url||'',placeholder:'https://api.example.com/v1'});const apiKey=el('input',{type:'password',autocomplete:'new-password',placeholder:creds.api_key?'已配置；留空保持不变':'输入 API Key'});
   const buffer=el('input',{type:'number',min:'0',max:'600',step:'1',value:settings.buffer_seconds??60});const dailyTime=el('input',{type:'time',value:settings.daily_time||'09:00'});const dailyTimezone=el('input',{value:settings.daily_timezone||'America/Los_Angeles',placeholder:'例如 Asia/Shanghai'});const dailyEnabled=el('input',{type:'checkbox',checked:settings.daily_enabled});const prompt=el('textarea',{rows:'4',value:settings.system_prompt||'',placeholder:'例如：回答时直接一些，有需要再展开。'});
   const keyInputs={};for(const [key,label] of [['vision_key','图片识别 API Key'],['groq_key','语音 / 视频转写 API Key'],['brave_key','联网搜索 API Key'],['tikhub_key','平台内容解析 API Key']])keyInputs[key]={label,input:el('input',{type:'password',autocomplete:'new-password',placeholder:creds[key]?'已配置；留空保持不变':'尚未配置'})};
   const extra=el('details',{class:'settings-details'},el('summary',{},'图片、转写与搜索的独立密钥'),el('div',{},Object.values(keyInputs).map(v=>field(v.label,v.input))));
   const mcpEditor=el('textarea',{class:'mcp-editor',spellcheck:'false','aria-label':'MCP 服务器 JSON 配置',value:'{\n  "mcpServers": {}\n}'});const serverList=el('div',{class:'server-list',id:'server-list'});const mcpError=el('p',{class:'inline-error',id:'mcp-error'});
   const sections=[
+    el('section',{class:'settings-section library-setting'},el('h2',{},'资料库'),el('p',{},'聊天、笔记、记忆与附件分别保存，模型连接设置共用。'),field('当前资料库',librarySelect)),
     el('section',{class:'settings-section',id:'settings-0'},el('h2',{},'模型与能力'),el('p',{},'使用兼容 Chat Completions 的模型服务。密钥只保存在本机。'),field('模型名称',model),field('API 地址',base),field('API Key',apiKey),btn('测试已保存的模型',e=>action(e.currentTarget,async()=>{const test=await api('/api/settings/test',{method:'POST'});toast(test.ok?'模型连接正常':test.error||test.message||'模型连接失败',!test.ok);}),'button','refresh'),extra,field('你希望它怎样与你相处',prompt)),
     el('section',{class:'settings-section',id:'settings-1'},el('h2',{},'聊天节奏'),el('p',{},'连续发送时，等你停下来再一起处理。也可以随时点「发完了」。'),field('等待时间（秒）',buffer,'新消息会重新开始计时；处理期间也可以继续补充。')),
     el('section',{class:'settings-section',id:'settings-2'},el('h2',{},'每日来信'),el('p',{},'围绕你最近的收藏、问题和记忆整理日报，软件运行时会按时执行。'),el('label',{class:'check-field'},dailyEnabled,'每天自动生成日报'),el('div',{class:'editor-row',style:'margin-top:18px'},field('每天的时间',dailyTime),field('时区',dailyTimezone,'例如 America/Los_Angeles 或 Asia/Shanghai。'))),
@@ -340,10 +424,36 @@ document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLower
 
 let pollCount=0;
 async function poll(){
-  if(S.polling||document.hidden)return;S.polling=true;
+  if(S.polling||document.hidden||S.switching||!S.libraryId)return;S.polling=true;
   try{if(S.view==='chat')await refreshMessages();if(++pollCount%4===0)await refreshState();if(S.reportRunning||S.view==='daily'){const r=await api('/api/reports/status');if(S.reportRunning&&!r.running){S.reportRunning=false;if(r.error)toast(r.error,true);else{toast('新的日报已整理好');if(S.view==='daily'){S.report=null;await loadReports();}}}else S.reportRunning=!!r.running;}}
-  catch(e){S.connected=false;$('#connection-dot').className='connection-dot error';$('#connection-dot').title='本地服务暂时未连接';}
+  catch(e){if(e.name!=='LibraryChanged'){S.connected=false;$('#connection-dot').className='connection-dot error';$('#connection-dot').title='本地服务暂时未连接';}}
   finally{S.polling=false;}
 }
-async function boot(){renderNav();renderSidebar();renderChat();try{await refreshState();renderSidebar();renderChat();await refreshMessages(true);const params=new URLSearchParams(location.search);if(params.get('note'))await openNote(params.get('note'));else if(params.get('report'))await openReport(params.get('report'));}catch(e){toast('暂时无法连接本地服务，请确认程序正在运行。',true);$('#connection-dot').className='connection-dot error';}setInterval(poll,1500);setInterval(updateBatch,1000);}
+function rememberLibrary(id){try{sessionStorage.setItem('personal-agent-library',id);}catch{}}
+async function switchLibrary(id,render=true){
+  if(id===S.libraryId||S.switching)return;
+  const oldId=S.libraryId,view=S.view;saveDraft();S.libraryDrafts[oldId]={drafts:S.drafts,draftFiles:S.draftFiles};
+  S.switching=true;S.libraryEpoch++;dialog.close();main.replaceChildren(head('资料库',''),el('div',{class:'busy-line'},'正在打开资料库…'));
+  try{
+    const result=await api('/api/libraries/select',{method:'POST',body:{id}});
+    S.libraryId=result.selected_id;S.library=result.library;rememberLibrary(S.libraryId);
+    const drafts=S.libraryDrafts[id]||{drafts:{},draftFiles:{}};
+    Object.assign(S,{channel:'inbox',channels:CHANNELS,stats:{},settings:{},pending:{},messages:[],messageHash:'',historyLoaded:false,historyEnd:false,attachments:new Map(),drafts:drafts.drafts,draftFiles:drafts.draftFiles,reply:null,notes:[],note:null,noteTab:'read',category:'',kind:'',query:'',reports:[],report:null,reportRunning:false,memories:[]});
+    const url=new URL(location.href);url.searchParams.set('library',id);for(const key of ['note','report','message','channel'])url.searchParams.delete(key);history.replaceState(null,'',url);
+    await refreshState();if(render)await navigate(view);toast('已打开'+result.library.title);
+  }catch(e){toast(errorText(e),true);if(S.libraryId===oldId&&render)await navigate(view);}
+  finally{S.switching=false;}
+}
+async function boot(){
+  renderNav();renderSidebar();renderChat();
+  try{
+    const params=new URLSearchParams(location.search);let remembered;try{remembered=sessionStorage.getItem('personal-agent-library');}catch{}
+    const available=await api('/api/libraries');S.libraries=available.libraries||[];
+    const requested=params.get('library')||remembered||available.selected_id;
+    S.libraryId=S.libraries.some(l=>l.id===requested)?requested:available.selected_id;rememberLibrary(S.libraryId);
+    await refreshState();renderSidebar();renderChat();await refreshMessages(true);
+    if(params.get('note'))await openNote(params.get('note'));else if(params.get('report'))await openReport(params.get('report'));else if(params.get('message'))await jumpToMessage(params.get('message'));
+  }catch(e){toast('暂时无法连接本地服务，请确认程序正在运行。',true);$('#connection-dot').className='connection-dot error';}
+  setInterval(poll,1500);setInterval(updateBatch,1000);
+}
 boot();

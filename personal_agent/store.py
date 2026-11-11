@@ -137,6 +137,9 @@ class Store:
                     created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                     export_path TEXT NOT NULL DEFAULT '');
                 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS import_records(
+                    source_key TEXT PRIMARY KEY, message_id TEXT UNIQUE NOT NULL,
+                    payload TEXT NOT NULL, imported_at TEXT NOT NULL);
                 PRAGMA user_version=1;
             """)
             db.executemany("INSERT OR IGNORE INTO channels VALUES(?,?,?,?)", [
@@ -220,7 +223,7 @@ class Store:
         _text(content, "消息")
         if role not in ("user", "assistant", "system", "tool"):
             raise ValueError("消息角色无效")
-        if status not in ("pending", "processing", "paused", "done", "error"):
+        if status not in ("pending", "processing", "paused", "done", "error", "archived"):
             raise ValueError("消息状态无效")
         attachments = _strings(attachment_ids, "附件")
         if not isinstance(meta or {}, dict):
@@ -237,6 +240,160 @@ class Store:
             db.execute("INSERT INTO messages(id,channel,role,content,created_at,reply_to,attachment_ids,status,meta) VALUES(?,?,?,?,?,?,?,?,?)",
                        (identifier, channel, role, content, _now(), reply_to, _json(attachments), status, _json(meta or {})))
         return self.get_message(identifier)
+
+    def import_message(self, source_key, content, created_at, meta, attachment_ids=None, channel="inbox", raw=None):
+        """Idempotent immutable historical ingestion; importing does not execute a turn."""
+        _text(source_key, "来源标识", 2000, True)
+        _text(content, "原消息")
+        parsed = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError("原消息时间必须包含时区")
+        timestamp = parsed.astimezone(timezone.utc).isoformat(timespec="microseconds")
+        identifier = uuid.uuid5(uuid.NAMESPACE_URL, "personal-agent:" + source_key).hex
+        attachments = _strings(attachment_ids, "附件")
+        with self._write_lock, self._db() as db:
+            self._channel(db, channel)
+            prior = db.execute("SELECT message_id FROM import_records WHERE source_key=?", (source_key,)).fetchone()
+            if prior:
+                return {"message": self.get_message(prior[0]), "created": False}
+            for attachment in attachments:
+                if not db.execute("SELECT 1 FROM attachments WHERE id=?", (attachment,)).fetchone():
+                    raise ValueError("附件不存在")
+            db.execute("INSERT INTO messages(id,channel,role,content,created_at,reply_to,attachment_ids,status,meta) VALUES(?,?,?,?,?,?,?,?,?)",
+                       (identifier, channel, "user", content, timestamp, None, _json(attachments), "archived", _json(meta)))
+            db.execute("INSERT INTO import_records VALUES(?,?,?,?)", (source_key, identifier, _json(raw if raw is not None else meta), _now()))
+        return {"message": self.get_message(identifier), "created": True}
+
+    def imported_record(self, id):
+        with self._db() as db:
+            row = db.execute("SELECT * FROM import_records WHERE message_id=?", (id,)).fetchone()
+            return {**dict(row), "payload": json.loads(row["payload"])} if row else None
+
+    def link_imported_reply(self, id, reply_to):
+        with self._write_lock, self._db() as db:
+            if not db.execute("SELECT 1 FROM import_records WHERE message_id=?", (id,)).fetchone():
+                raise ValueError("只能关联导入消息的原引用")
+            if not db.execute("SELECT 1 FROM messages WHERE id=? AND channel<>'transfer'", (reply_to,)).fetchone():
+                raise ValueError("引用消息不存在")
+            db.execute("UPDATE messages SET reply_to=? WHERE id=? AND reply_to IS NULL", (reply_to, id))
+
+    def enrich_imported_media(self, id, attachment_ids, media_status):
+        """A later export may recover media; the historical text stays immutable."""
+        with self._write_lock, self._db() as db:
+            row = db.execute("SELECT * FROM messages WHERE id=?", (id,)).fetchone()
+            if not row or not db.execute("SELECT 1 FROM import_records WHERE message_id=?", (id,)).fetchone():
+                raise ValueError("原始导入记录不存在")
+            ids = list(dict.fromkeys(json.loads(row['attachment_ids']) + attachment_ids))
+            for aid in ids:
+                if not db.execute("SELECT 1 FROM attachments WHERE id=?", (aid,)).fetchone():
+                    raise ValueError("附件不存在")
+            meta = json.loads(row['meta'])
+            if media_status:meta['media_status'] = media_status
+            db.execute("UPDATE messages SET attachment_ids=?,meta=? WHERE id=?", (_json(ids), _json(meta), id))
+
+    def refresh_imported_metadata(self, id, projection, raw):
+        """Improve a decoded representation without replacing its original evidence."""
+        with self._write_lock, self._db() as db:
+            record=db.execute('SELECT payload FROM import_records WHERE message_id=?',(id,)).fetchone()
+            row=db.execute('SELECT meta FROM messages WHERE id=?',(id,)).fetchone()
+            if not record or not row:raise ValueError('导入原件不存在')
+            original=json.loads(record[0])
+            for key in ('text','content','sent_at_unix_ms','created_at'):
+                if key in original and key in raw and original[key]!=raw[key]:
+                    raise ValueError('同一消息ID的原文或时间不一致，原记录已保留')
+            meta=json.loads(row[0])
+            for key in ('provenance','source_kind','share','forwarded','quote','parse_warning'):
+                if key in projection:meta[key]=projection[key]
+            db.execute('UPDATE messages SET meta=? WHERE id=?',(_json(meta),id))
+
+    def queue_imported(self, ids):
+        ids = _strings(ids, "消息", 200)
+        queued, skipped = [], []
+        with self._write_lock, self._db() as db:
+            for identifier in ids:
+                row = db.execute("SELECT * FROM messages WHERE id=?", (identifier,)).fetchone()
+                if not row or not db.execute("SELECT 1 FROM import_records WHERE message_id=?", (identifier,)).fetchone():
+                    raise ValueError("导入的原消息不存在")
+                if row["channel"] == "transfer":
+                    raise ValueError("文件传输内容不参与整理")
+                if row["status"] not in ("archived", "error"):
+                    skipped.append(identifier)
+                    continue
+                meta = json.loads(row["meta"])
+                meta["replay_mode"] = "organize"
+                db.execute("UPDATE messages SET status='pending',meta=? WHERE id=?", (_json(meta), identifier))
+                queued.append(identifier)
+        return {"queued": queued, "skipped": skipped}
+
+    def message_context(self, id, radius=2):
+        focus = self.get_message(id)
+        if not focus:
+            raise ValueError("消息不存在")
+        radius = max(0, min(int(radius), 10))
+        provenance = focus.get("meta", {}).get("provenance", {})
+        conversation = provenance.get("conversation_id")
+        with self._db() as db:
+            rows = [self._decode(row) for row in db.execute("SELECT * FROM messages WHERE channel=? ORDER BY created_at,seq", (focus["channel"],))]
+        if conversation:
+            rows = [m for m in rows if m.get("meta", {}).get("provenance", {}).get("conversation_id") == conversation]
+        index = next(i for i, row in enumerate(rows) if row["id"] == id)
+        result = rows[max(0, index-radius):index+radius+1]
+        quoted = focus
+        seen = {m["id"] for m in result}
+        traversed = {focus['id']}
+        for _ in range(8):
+            quoted = self.get_message(quoted.get("reply_to")) if quoted.get("reply_to") else None
+            if not quoted or quoted["channel"] == "transfer" or quoted["id"] in traversed:
+                break
+            traversed.add(quoted['id'])
+            if quoted['id'] not in seen:
+                seen.add(quoted["id"])
+                result.insert(0, quoted)
+        return result
+
+    def source_transcript(self, source_ids, include_context=True):
+        """Render evidence from immutable messages, never from an LLM paraphrase."""
+        evidence = {}
+        selected = set(source_ids)
+        for identifier in source_ids:
+            focus = self.get_message(identifier)
+            if not focus or focus["channel"] == "transfer":
+                continue
+            # Explicit quote chains belong to the evidence. Adjacent unselected
+            # topics stay available in the context viewer, not copied into notes.
+            for message in self.message_context(identifier, 0):
+                evidence[message["id"]] = message
+        sections = []
+        with self._db() as db:
+            sequence = {row['id']:row['seq'] for row in db.execute('SELECT id,seq FROM messages')}
+        def forwarded_text(entries, depth=0):
+            parts=[]
+            for entry in entries:
+                parts.append(f"\n{'  '*depth}转发 · {entry.get('sender_name', '原作者')} {entry.get('time', '')}\n{entry.get('content', '')}")
+                if entry.get('quote'):
+                    q=entry['quote'];parts.append(f"\n引用 {q.get('sender_name','')}：{q.get('content','')}")
+                if entry.get('forwarded'):parts.append(forwarded_text(entry['forwarded'],depth+1))
+            return ''.join(parts)
+        for m in sorted(evidence.values(), key=lambda x: (x["created_at"], sequence[x['id']])):
+            meta = m.get("meta") or {}
+            p = meta.get("provenance") or {}
+            sender = p.get("sender_name") or ("用户" if m["role"] == "user" else "助手")
+            label = "原消息" if m["id"] in selected else "上下文"
+            kind = '分享卡片' if meta.get('share') else ('合并转发' if meta.get('forwarded') else label)
+            text = f"[{m['created_at']}] {sender} · {kind}\n{m['content']}"
+            quote = meta.get("quote") or {}
+            if quote:
+                text += f"\n引用 {quote.get('sender_name', '')} {quote.get('time', '')}：\n{quote.get('content', '')}"
+            text += forwarded_text(meta.get('forwarded') or [])
+            for aid in m.get("attachment_ids", []):
+                attachment = self.get_attachment(aid)
+                if attachment:
+                    text += f"\n附件：{attachment['name']}"
+            for source in meta.get("parsed") or []:
+                if source.get("text"):
+                    text += f"\n来源材料 {source.get('url') or source.get('title') or ''}（{source.get('scope', '')} / {source.get('status', '')}）：\n{source['text']}"
+            sections.append(text)
+        return "\n\n".join(sections)
 
     def get_message(self, id):
         with self._db() as db:
@@ -363,7 +520,7 @@ class Store:
             sources = self._sources(db, source_ids if source_ids is not None else (old["source_ids"] if old else []))
             note = dict(id=identifier, title=title.strip(), body=body, category=category, kind=kind,
                         source_ids=sources, source_url=source_url or (old["source_url"] if old else ""),
-                        original=old["original"] if old else original,
+                        original=(old["original"] + ("\n\n" + original if original and set(sources)-set(old["source_ids"]) and original not in old["original"] else "")) if old else original,
                         tags=_strings(tags if tags is not None else (old["tags"] if old else []), "标签"),
                         created_at=old["created_at"] if old else _now(), updated_at=_now(),
                         revision=old["revision"] + 1 if old else 1, archived=0)

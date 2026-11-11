@@ -21,7 +21,9 @@
 
 ## 笔记、记忆和日报
 
-笔记支持中文搜索、按分类和类型浏览、编辑及 Markdown 导出。“原文与来源”保留原始内容；修改整理正文不会覆盖原话。
+笔记支持中文搜索、按分类和类型浏览、编辑及 Markdown 导出。“原文与来源”可以直接阅读当时的对话、作者、时间、引用、转发和附件。给同一主题继续补充时，新原话也会追加；修改整理正文不会覆盖原话。
+
+在**设置 → 当前资料库**选择“日常资料库”或“满庭芳回放库”。两边的聊天、笔记、记忆、附件和日报各自独立，模型连接配置共用。回放库默认不自动生成日报。
 
 长期偏好和明确要求记住的内容进入“记忆”，可以直接修改或删除。聊天变长后自动整理上下文摘要，原聊天仍完整保存。也可在聊天右上角查看或手动整理摘要。
 
@@ -50,6 +52,16 @@
 
 保存后点“测试连接”，确认实际发现的工具。Agent 会在对话中按需要使用它们。Graphify 可按其官方 MCP 方式接入；本版不依赖 Graphify 才能运行，也没有导入旧信息源系统的整个资料库。
 
+## 从其他 Agent 导入原聊天
+
+Personal Agent 也提供自己的 MCP 服务。先启动电脑端，再将软件目录里的 `mcp-config.json` 添加到其他 Agent 的 MCP 配置。也可通过 `Start-MCP.ps1` 启动 stdio 服务。
+
+工具支持传入 Alpha 的原始 JSON 文件及其附件，或直接传入 `{conversation, messages}` 聊天对象。先用 `list_libraries` 选择资料库，再用 `import_original_chat` 开始导入、`get_import_status` 等待完成。然后用 `find_original_messages` 找到原消息，`organize_messages` 将连续的一组消息交给 Agent 整理。`get_processing_status` 查看是否完成，`search_notes` / `read_note` 查看笔记，`read_original_context` 读取原对话。
+
+每次调用都明确指定 `library_id`：日常库为 `daily`，满庭芳库为 `mantingfang`。导入本身只保存原聊天；选定消息后才调用模型整理。重复导入不会重复创建消息，后续导出补齐的附件可以补入。历史记录中的操作指令不会直接触发外部 MCP 动作。
+
+Alpha JSON 要保留原始消息 ID、作者、时间和 XML；附件文件及 `media-manifest.json` 保持导出时的目录结构。普通聊天对象的消息至少需要 `id`、`conversation_id`、`content`、带时区的 `created_at` 和作者信息；`is_self` 表明是否是本人原话。
+
 ## 文件在哪里
 
 软件目录 `D:\Project\我的personal agent` 只放程序、启动文件和使用说明。
@@ -60,6 +72,7 @@
 - `attachments`：原始附件；`notes`、`reports`：可直接阅读的 Markdown。
 - `config.json`、`mcp.json`：本机配置，可能包含密钥。
 - `runtime`、`cache`、`logs`：运行环境、缓存和运行日志。
+- `libraries/mantingfang`：满庭芳回放库；`archives`：原始聊天导出。
 
 备份时先停止服务，再备份资料目录（`runtime`、`cache` 和 `logs` 可不备份）。恢复时保留原目录布局。Codex 的视频分析、测试数据和临时文件均不在软件目录或正式资料库。
 

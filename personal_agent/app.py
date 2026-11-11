@@ -5,6 +5,7 @@ import mimetypes
 import re
 import uuid
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -15,16 +16,23 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
 
-from .config import Config, DATA_DIR
-from .store import Store
-from .connectors import Services
-from .mcp_client import MCPManager
-from .engine import Engine
+from .config import DATA_DIR
+from .libraries import manager
 
-config=Config(); store=Store(DATA_DIR)
-services=Services(DATA_DIR,config.values)
-mcp=MCPManager(DATA_DIR/'mcp.json')
-engine=Engine(store,config,services,mcp)
+_library_id=ContextVar('personal_agent_library',default=None)
+
+def get_context(library_id=None):
+    """Routes use the bound request; workers/importers may name their library."""
+    return manager.get_context(_library_id.get() if library_id is None else library_id)
+
+class _ContextMember:
+    def __init__(self,name):self.name=name
+    def __getattr__(self,key):return getattr(getattr(get_context(),self.name),key)
+
+# These resolve at request entry. Bound Engine methods always retain their own
+# concrete Store/Services, including tasks that outlive a library selection.
+config=_ContextMember('config');store=_ContextMember('store')
+services=_ContextMember('services');mcp=_ContextMember('mcp');engine=_ContextMember('engine')
 background=set()
 
 def spawn(coro):
@@ -33,13 +41,13 @@ def spawn(coro):
 
 @asynccontextmanager
 async def lifespan(app):
-    await engine.start()
+    await manager.start()
     yield
     for task in background:task.cancel()
     if background:await asyncio.gather(*background,return_exceptions=True)
-    await engine.close()
+    await manager.close()
 
-app=FastAPI(title='Personal Agent',version='0.1.0',lifespan=lifespan,docs_url=None,redoc_url=None)
+app=FastAPI(title='Personal Agent',version='0.2.0',lifespan=lifespan,docs_url=None,redoc_url=None)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=['127.0.0.1','localhost','[::1]','testserver'])
 
 @app.middleware('http')
@@ -49,11 +57,18 @@ async def same_origin(request,call_next):
         supplied=urlsplit(origin); target=urlsplit(str(request.url))
         if supplied.netloc!=target.netloc or supplied.scheme!=target.scheme:
             return JSONResponse({'detail':'请从 Personal Agent 窗口执行操作。'},status_code=403)
-    response=await call_next(request)
+    identifier=request.headers.get('x-personal-library') or request.query_params.get('library') or manager.selected_id
+    try:context=manager.get_context(identifier)
+    except ValueError:return JSONResponse({'detail':'资料库不存在'},status_code=404)
+    token=_library_id.set(context.id)
+    request.state.library=context
+    try:response=await call_next(request)
+    finally:_library_id.reset(token)
     response.headers['X-Content-Type-Options']='nosniff'
     response.headers['Referrer-Policy']='no-referrer'
     response.headers['X-Frame-Options']='DENY'
     response.headers['Cache-Control']='no-store' if request.url.path.startswith('/api') else 'no-cache'
+    if request.url.path.startswith('/api'):response.headers['X-Personal-Library']=context.id
     return response
 
 @app.exception_handler(ValueError)
@@ -87,14 +102,24 @@ class NoteInput(BaseModel):
     tags:list[str]|None=None
 
 @app.get('/api/health')
-async def health():return {'ok':True,'app':'PersonalAgent','version':'0.1.0'}
+async def health():return {'ok':True,'app':'PersonalAgent','version':'0.2.0'}
+
+@app.get('/api/libraries')
+async def libraries():return {'libraries':manager.list(),'selected_id':get_context().id}
+
+class LibrarySelection(BaseModel):id:str
+
+@app.post('/api/libraries/select')
+async def select_library(payload:LibrarySelection):
+    selected=manager.select(payload.id)
+    return {'library':selected.public(),'selected_id':selected.id}
 
 @app.get('/api/state')
 async def state():
     cfg=config.values
-    return {'channels':store.channels(),'stats':store.stats(),
+    return {'library':get_context().public(),'channels':store.channels(),'stats':store.stats(),
             'settings':{'model':cfg['model'],'provider':urlsplit(cfg['base_url']).hostname,
-                'buffer_seconds':cfg['buffer_seconds'],'daily_time':cfg['daily_time'],'daily_enabled':cfg['daily_enabled'],'data_dir':str(DATA_DIR)},
+                'buffer_seconds':cfg['buffer_seconds'],'daily_time':cfg['daily_time'],'daily_timezone':cfg['daily_timezone'],'daily_enabled':cfg['daily_enabled'],'data_dir':str(get_context().data_dir)},
             'service_status':{'model':bool(cfg['api_key']),'vision':bool(cfg['vision_key']),
                               'transcription':bool(cfg['groq_key']),'search':bool(cfg['brave_key'])},
             'pending':{c['id']:engine.state(c['id']) for c in store.channels()}}
@@ -271,6 +296,9 @@ async def compact(payload:ChannelInput):
 @app.post('/api/parse')
 async def parse(request:Request):
     data=await request.json();return await services.read_url(str(data.get('url','')))
+
+from .import_api import router as import_router
+app.include_router(import_router)
 
 WEB=Path(__file__).resolve().parents[1]/'web'
 @app.get('/')

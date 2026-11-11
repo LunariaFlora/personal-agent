@@ -16,28 +16,50 @@ DEFAULTS = {
     'context_chars': 36000,
 }
 SECRET_KEYS = {'api_key','vision_key','groq_key','brave_key','tikhub_key'}
+SHARED_KEYS = SECRET_KEYS | {'model','base_url','vision_model','vision_base_url','groq_model','groq_base_url'}
 
 class Config:
-    def __init__(self, data_dir=DATA_DIR):
+    def __init__(self, data_dir=DATA_DIR, *, shared=None, defaults=None):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.path = self.data_dir/'config.json'
         self.lock = threading.RLock()
+        self.shared = shared
+        self._children = []
         self.values = dict(DEFAULTS)
+        self.values.update(defaults or {})
         if self.path.exists():
-            self.values.update(json.loads(self.path.read_text(encoding='utf-8')))
+            loaded = json.loads(self.path.read_text(encoding='utf-8'))
+            self.values.update({k:v for k,v in loaded.items() if k in DEFAULTS and (not shared or k not in SHARED_KEYS)})
         else:
-            self.values.update({k:os.environ[e] for k,e in {'api_key':'DEEPSEEK_API_KEY','vision_key':'KIMI_API_KEY','groq_key':'GROQ_API_KEY','brave_key':'BRAVE_API_KEY','tikhub_key':'TIKHUB_API_KEY'}.items() if os.environ.get(e)})
+            if not shared:
+                self.values.update({k:os.environ[e] for k,e in {'api_key':'DEEPSEEK_API_KEY','vision_key':'KIMI_API_KEY','groq_key':'GROQ_API_KEY','brave_key':'BRAVE_API_KEY','tikhub_key':'TIKHUB_API_KEY'}.items() if os.environ.get(e)})
             self.save({})
+        if shared:
+            shared._children.append(self)
+            self._sync_shared()
+
+    def _sync_shared(self):
+        if self.shared:
+            with self.lock:
+                self.values.update({k:self.shared.values[k] for k in SHARED_KEYS})
+
     def save(self, values):
+        if self.shared:
+            shared_values = {k:v for k,v in values.items() if k in SHARED_KEYS}
+            if shared_values:self.shared.save(shared_values)
         with self.lock:
             for k,v in values.items():
                 if k not in DEFAULTS: continue
+                if self.shared and k in SHARED_KEYS:continue
                 if k in SECRET_KEYS and (not v or str(v).startswith('••')): continue
                 self.values[k] = v
+            self._sync_shared()
             tmp = self.path.with_suffix('.tmp')
-            tmp.write_text(json.dumps(self.values,ensure_ascii=False,indent=2),encoding='utf-8')
+            persisted={k:v for k,v in self.values.items() if not self.shared or k not in SHARED_KEYS}
+            tmp.write_text(json.dumps(persisted,ensure_ascii=False,indent=2),encoding='utf-8')
             tmp.replace(self.path)
+        for child in self._children:child._sync_shared()
     def public(self):
         return {'settings':{k:v for k,v in self.values.items() if k not in SECRET_KEYS},'credentials':{k:bool(self.values.get(k)) for k in SECRET_KEYS},'data_dir':str(self.data_dir)}
     def redact(self, value):
