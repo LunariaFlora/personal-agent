@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,15 +36,29 @@ class LibraryManager:
         self.path=self.root/'libraries.json'
         self.lock=threading.RLock()
         self.selected_id='daily'
+        registry={}
         if self.path.exists():
             try:
-                selected=json.loads(self.path.read_text(encoding='utf-8')).get('selected_id')
-                if selected in ('daily','mantingfang'):self.selected_id=selected
+                loaded=json.loads(self.path.read_text(encoding='utf-8'))
+                if isinstance(loaded,dict):registry=loaded
             except (OSError,ValueError,TypeError):pass
         shared=Config(self.root)
         self.contexts={}
         definitions=[('daily','日常资料库',self.root,shared),
                      ('mantingfang','满庭芳回放库',self.root/'libraries'/'mantingfang',None)]
+        self.extra_definitions=[]
+        seen={'daily','mantingfang'}
+        extras=registry.get('libraries',[])
+        for item in extras if isinstance(extras,list) else []:
+            if not isinstance(item,dict):continue
+            identifier=item.get('id','')
+            title=item.get('title','')
+            if not isinstance(identifier,str) or not re.fullmatch(r'[a-z][a-z0-9_-]{0,47}',identifier):continue
+            if identifier in seen or not isinstance(title,str) or not title.strip():continue
+            seen.add(identifier)
+            title=title.strip()[:80]
+            self.extra_definitions.append({'id':identifier,'title':title})
+            definitions.append((identifier,title,self.root/'libraries'/identifier,None))
         for identifier,title,path,config in definitions:
             config=config or Config(path,shared=shared,defaults={'daily_enabled':False})
             store=Store(path)
@@ -51,6 +66,8 @@ class LibraryManager:
             mcp=MCPManager(path/'mcp.json')
             engine=Engine(store,config,services,mcp)
             self.contexts[identifier]=LibraryContext(identifier,title,path,config,store,services,mcp,engine)
+        selected=registry.get('selected_id')
+        if isinstance(selected,str) and selected in self.contexts:self.selected_id=selected
 
     def get_context(self, library_id=None):
         identifier=self.selected_id if library_id is None else library_id
@@ -63,7 +80,7 @@ class LibraryManager:
         context=self.get_context(library_id)
         with self.lock:
             tmp=self.path.with_suffix('.tmp')
-            tmp.write_text(json.dumps({'selected_id':library_id},ensure_ascii=False,indent=2),encoding='utf-8')
+            tmp.write_text(json.dumps({'selected_id':library_id,'libraries':self.extra_definitions},ensure_ascii=False,indent=2),encoding='utf-8')
             tmp.replace(self.path)
             self.selected_id=library_id
         return context
