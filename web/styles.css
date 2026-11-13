@@ -29,9 +29,9 @@ main{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(
 .tree-note{display:flex;align-items:center;gap:7px;text-align:left;font-size:12px;min-height:33px;padding-top:7px;padding-bottom:7px;padding-right:10px;color:#4b5d4f}
 .tree-note svg{margin-left:11px;color:#82917b}.tree-note.active svg{color:var(--green)}.tree-folder.active .tree-folder-select{font-weight:600}
 .side-list{scrollbar-width:thin}.note-detail .note-body{max-width:1000px}.note-detail .source-context{max-width:1000px}
-.editor-head{padding-left:max(30px,calc((100% - 1120px)/2));padding-right:max(30px,calc((100% - 1120px)/2))}
+.editor-head{padding-left:32px;padding-right:32px}
 .editor-workspace{flex:1;min-height:0;overflow:auto;background:#fbfcfa;padding:28px 32px 36px}
-.note-editor{max-width:1120px;margin:0 auto;display:flex;flex-direction:column;min-height:calc(100dvh - 151px)}
+.note-editor{width:100%;max-width:none;margin:0;display:flex;flex-direction:column;min-height:calc(100dvh - 151px)}
 .note-editor>.editor-field>input{font-size:21px;font-weight:550;padding:13px 15px}.editor-metadata{display:grid;grid-template-columns:minmax(190px,1.4fr) minmax(130px,.7fr) minmax(180px,1fr);gap:16px}
 .note-editor .editor-field{margin-bottom:19px}.editor-body-heading{display:flex;align-items:center;justify-content:space-between;margin:0 0 8px}.editor-body-heading label{font-size:12px;font-weight:600}
 .note-editor textarea.note-body-editor{width:100%;min-height:max(420px,calc(100dvh - 360px));flex:1;resize:vertical;padding:20px 22px;font-size:15px;line-height:1.9;background:#fff}

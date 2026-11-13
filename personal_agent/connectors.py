@@ -208,6 +208,7 @@ class Services:
             raise ServiceError("请先在设置中连接图片识别模型。" if vision else "请先在设置中连接聊天模型。")
         payload = {"model": model, "messages": messages, "max_tokens": max(1, int(max_tokens)), "stream": False}
         lower = str(model).lower()
+        deepseek_thinking = lower in ("deepseek-flash", "deepseek-v4-pro")
         if lower.startswith("kimi-k3"):
             payload["reasoning_effort"] = "low"
             payload["max_tokens"] = max(int(max_tokens), 6000)
@@ -217,14 +218,22 @@ class Services:
         elif lower.startswith("kimi-"):
             pass  # Other Kimi models keep provider defaults for restricted parameters.
         elif lower.startswith("deepseek"):
-            if "reasoner" not in lower:
+            if deepseek_thinking:
+                # Keep the provider's reasoning capability for source attribution,
+                # chronological recall and tool decisions. Reasoning shares the
+                # output budget with the visible result.
+                payload["thinking"] = {"type": "enabled"}
+                payload["reasoning_effort"] = "high"
+                payload["max_tokens"] = max(16384, int(max_tokens) + 8192)
+            elif "reasoner" not in lower:
                 payload["thinking"] = {"type": "disabled"}
                 payload["temperature"] = temperature
         else:
             payload["temperature"] = temperature
         if tools:
             payload["tools"] = tools
-            payload["tool_choice"] = "auto"
+            if not deepseek_thinking:
+                payload["tool_choice"] = "auto"
         try:
             response = requests.post(_endpoint(base, "/chat/completions"), json=payload,
                                      headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},

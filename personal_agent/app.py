@@ -47,7 +47,7 @@ async def lifespan(app):
     if background:await asyncio.gather(*background,return_exceptions=True)
     await manager.close()
 
-app=FastAPI(title='Personal Agent',version='0.2.0',lifespan=lifespan,docs_url=None,redoc_url=None)
+app=FastAPI(title='Personal Agent',version='0.3.0',lifespan=lifespan,docs_url=None,redoc_url=None)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=['127.0.0.1','localhost','[::1]','testserver'])
 
 @app.middleware('http')
@@ -102,7 +102,7 @@ class NoteInput(BaseModel):
     tags:list[str]|None=None
 
 @app.get('/api/health')
-async def health():return {'ok':True,'app':'PersonalAgent','version':'0.2.0'}
+async def health():return {'ok':True,'app':'PersonalAgent','version':'0.3.0'}
 
 @app.get('/api/libraries')
 async def libraries():return {'libraries':manager.list(),'selected_id':get_context().id}
@@ -226,7 +226,7 @@ async def reports():return {'reports':store.list_reports()}
 
 @app.post('/api/reports/generate')
 async def generate_report():
-    if not engine.report_running:spawn(engine.generate_report())
+    if not engine.report_running:spawn(engine.generate_report(manual=True))
     return {'ok':True,'running':True}
 
 @app.get('/api/reports/status')
