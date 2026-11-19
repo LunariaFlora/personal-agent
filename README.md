@@ -1,85 +1,124 @@
-# 我的 Personal Agent
+# Personal Agent
 
-一个以聊天为入口的个人工作空间。把想法、链接、图片和文件发进来，值得留下的内容整理成笔记，之后讨论相同话题时可以再找回来。
+A local-first personal workspace that starts from a chat box. Send it thoughts, links, images and files; whatever is worth keeping gets organised into notes that you can find again the next time the same topic comes up.
 
-## 打开
+Everything runs on your own machine. There is no account, no telemetry, and no server component outside your computer. The web UI is a single local page served by a Python process at `http://127.0.0.1:8765`.
 
-双击 **启动 Personal Agent.vbs**。也可以在服务运行时打开 http://127.0.0.1:8765 。
+## The four entry points
 
-第一次使用本机已配置好的运行环境即可。换电脑时，需要 Python 3.11 及以上，运行 `Install.ps1`，然后在设置里填模型配置。音视频解析还需要 ffmpeg 和 ffprobe；当前电脑已安装。
+The app deliberately separates four modes so that casual notes, real discussions, saved material and raw file transfers do not contaminate each other:
 
-## 四个聊天入口
+| Entry | What it is for |
+|---|---|
+| **Quick capture** | Thoughts, questions and screenshots sent in quick succession. The agent uses the surrounding context to decide what is worth keeping. |
+| **Chat** | Discuss problems, look up old notes, use connected tools. Say "save this" or "bookmark this" when something should persist. |
+| **Bookmarks** | Material is stored, parsed and classified by default; the original source is always kept. |
+| **File transfer** | Stores text and attachments so you can copy, preview or download them. **This entry never sends content to a model and never participates in memory or knowledge search.** |
 
-- **随手记**：想法、问题、截图都可以连续发。Agent 结合上下文判断，整理值得留下的内容。
-- **聊一聊**：讨论问题、查找旧笔记、使用已经接入的工具。需要保存时直接说“记下”或“收藏”。
-- **收藏夹**：默认收存、解析并分类，保留原始材料。
-- **文件传输**：保存文字和附件，方便复制、预览和下载。这个入口不会把内容发送给模型，也不参与记忆或知识检索。
+Enter sends, Shift+Enter inserts a newline. You can drag files in, paste screenshots, or use the paperclip. By default the app waits **60 seconds** after your last message before processing the batch; the *Done* button processes immediately. You can keep adding messages while a batch is being processed, and the reply waits for the new content. The wait time is configurable in settings.
 
-按 Enter 发送，Shift + Enter 换行。可以拖入文件、粘贴截图，或点回形针。默认最后一条消息发出后等待 **60 秒**再一起处理；点 **发完了**可立即处理。处理中仍能补充，回复会等待新增内容。等待时间可在设置调整。
+Any message can be **quoted** to continue or annotate a specific thought. Organised notes keep a link back to the source entry, the original message and its attachments.
 
-消息下方可以**引用**，继续给某个想法补充或批注。整理后的笔记保留来源入口，可回到原消息和附件。
+## Notes, memory and daily digest
 
-## 笔记、记忆和日报
+- Notes support full-text search, browsing by folder and type, editing, and Markdown export. Folders are expressed with `/` (for example `education/study/math`), can be expanded level by level on the left, and may contain both notes and sub-folders.
+- Drag the divider between panels to resize; the toolbar buttons collapse or expand the sidebar and list. The layout is remembered in the local browser.
+- Creating and editing a note uses the whole main area, with a preview of the body.
+- **Original text and source** shows the conversation, author, timestamps, quotes, forwards and attachments at the time. When you add to the same topic later, the agent looks for the existing topic, updates the relevant section, and appends the new wording. Editing an organised note never overwrites the original wording. If you edit the same note by hand while the agent is working on it, your edit is kept and the agent retries the round.
+- Switch libraries in **Settings → current library**. Each library keeps its own chats, notes, memory, attachments and digest; model connections are shared. Replay libraries do not generate a digest automatically.
+- Long-term preferences and things you explicitly asked to remember go into **memory**, which you can edit or delete directly. Long conversations are summarised automatically as context grows; the original conversation is always kept in full, and you can inspect or re-run the summary from the top-right corner of the chat.
+- The **daily digest** picks one to three useful points from the day, based on when the source messages happened, what you were working on, and what has already been sent. It offers context, references or an optional next step, and shows the actual titles of the notes it cites. When generated automatically it stays quiet if there is nothing new worth sending; generating it manually rebuilds that day's digest.
+- Digest defaults: time zone `America/Los_Angeles`, 09:00, both configurable. **The computer and the background service must be running.** Closing the chat window leaves the service running; while the machine is off no digest is generated. After a missed slot, the next start produces that day's digest once.
 
-笔记支持中文搜索、按目录和类型浏览、编辑及 Markdown 导出。目录用 `/` 表示层级，例如“教育/学习/数学”；左侧可以逐层展开，文件夹里既能有笔记，也能有下级目录。拖动面板间的分隔线可调整宽度，顶部的面板按钮可以收起或展开侧栏和列表；布局会在本机浏览器保留。新建、编辑笔记使用整个主区域，支持正文预览。
+## Parsing and tools
 
-“原文与来源”可以直接阅读当时的对话、作者、时间、引用、转发和附件。给同一主题继续补充时，Agent 会寻找已有主题并更新相关段落，新原话也会追加；修改整理正文不会覆盖原话。如果整理期间你手动修改了同一篇笔记，Agent 会保留你的编辑并提示本轮重试。
+Supported inputs: ordinary web article bodies, available Bilibili / YouTube subtitles and some platform articles; images (OCR plus scene description); PDF, DOCX and plain text extraction; local audio and video transcription; and question-driven sampling of video frames. Parse results distinguish body text, description, subtitles, transcription and sampled frames. When a page needs a login, has no subtitles, or is otherwise restricted, the app keeps the original link and states which parts could not be read. Frame sampling is not a substitute for watching frame by frame. Current limits: 1 GB per uploaded file, 2 hours per audio/video transcription.
 
-在**设置 → 当前资料库**切换资料库。各库的聊天、笔记、记忆、附件和日报独立，模型连接配置共用。回放库默认不自动生成日报。
+Default model routing: text uses the configured DeepSeek connection, images use Kimi, speech uses Groq, and platform parsing uses the configured TikHub connection. Analysis sends only the content currently being processed to the corresponding service — the file transfer entry is excluded. All of this is adjustable in settings. With the official DeepSeek endpoint, web search reuses the same connection; an independent Brave key is also supported, falling back to public search pages when unavailable. Search summaries are labelled as leads and can be followed by reading the original page.
 
-长期偏好和明确要求记住的内容进入“记忆”，可以直接修改或删除。聊天变长后自动整理上下文摘要，原聊天仍完整保存。也可在聊天右上角查看或手动整理摘要。
+### MCP tools
 
-“日报”结合原消息的发生时间、关注的问题和此前推送过的内容，挑选 1–3 个有帮助的重点，提供关联、资料或可选的下一步。来源显示实际引用的笔记标题；自动生成时，没有新的有用内容就不会重复发送。再次手动生成会重新整理当天的日报。默认时区为 America/Los_Angeles，时间为 09:00，可修改。**电脑和后台服务需要运行**；关闭聊天窗口后后台继续运行，电脑关机期间不能生成。错过时间后再次启动会补当天一份。
-
-## 解析与工具
-
-支持普通网页正文、可取得的 B站/YouTube 字幕和部分平台文章；图片可识别文字与画面，PDF、DOCX、文本可以提取正文；本地音视频支持语音转写，并可按问题读取视频抽样帧。
-
-解析结果区分正文、简介、字幕、转写和抽样画面。需要登录、没有字幕或平台限制访问时，会保存原链接并说明未读到的部分。视频抽样不能代替逐帧查看。当前单文件上传上限 1GB，音视频转写上限 2 小时。
-
-文字默认使用已有的 DeepSeek 配置，图片使用 Kimi，语音使用 Groq，平台解析使用已有 TikHub 配置。模型分析会将当前需要处理的内容发给对应服务；文件传输入口除外。配置可以在设置中调整。使用 DeepSeek 官方接口时，联网搜索复用同一连接；也支持独立配置 Brave，不可用时尝试公开搜索页。搜索返回的摘要会标为检索线索，需要时继续读取原网页。
-
-在“设置 → MCP 工具”粘贴标准 `mcpServers` JSON，可接入 stdio 或 Streamable HTTP 服务。例如：
+Under **Settings → MCP tools** you can paste a standard `mcpServers` JSON object to connect stdio or Streamable HTTP servers:
 
 ```json
 {
   "mcpServers": {
     "my_tool": {
-      "command": "工具程序的绝对路径",
+      "command": "absolute/path/to/tool",
       "args": []
     }
   }
 }
 ```
 
-保存后点“测试连接”，确认实际发现的工具。Agent 会在对话中按需要使用它们。Graphify 可按其官方 MCP 方式接入；本版不依赖 Graphify 才能运行，也没有导入旧信息源系统的整个资料库。
+After saving, use *Test connection* to see which tools are actually discovered. The agent then decides during the conversation when to use them. `mcp-config.example.json` in this repository shows the shape of a Personal Agent client entry; replace the placeholder paths with your own before use.
 
-## 从其他 Agent 导入原聊天
+## Importing conversations from another agent
 
-Personal Agent 也提供自己的 MCP 服务。先启动电脑端，再将软件目录里的 `mcp-config.json` 添加到其他 Agent 的 MCP 配置。也可通过 `Start-MCP.ps1` 启动 stdio 服务。
+Personal Agent also exposes its own MCP server. Start the desktop app first, then add the repository's `mcp-config.json` to the MCP configuration of another agent. You can also start the stdio server directly with `Start-MCP.ps1`.
 
-工具支持传入 Alpha 的原始 JSON 文件及其附件，或直接传入 `{conversation, messages}` 聊天对象。先用 `list_libraries` 选择资料库，再用 `import_original_chat` 开始导入、`get_import_status` 等待完成。然后用 `find_original_messages` 找到原消息，`organize_messages` 将连续的一组消息交给 Agent 整理。`get_processing_status` 查看是否完成，`search_notes` / `read_note` 查看笔记，`read_original_context` 读取原对话。
+The tools accept either an exported original JSON file plus its attachments, or a `{conversation, messages}` object. The flow is: `list_libraries` to choose a library, `import_original_chat` to begin, `get_import_status` to wait for completion, `find_original_messages` to locate original messages, `organize_messages` to hand a consecutive batch to the agent, `get_processing_status` to check progress, `search_notes` / `read_note` to review notes, and `read_original_context` to read the surrounding conversation.
 
-每次调用都明确指定 `library_id`：日常库为 `daily`，满庭芳库为 `mantingfang`。导入本身只保存原聊天；选定消息后才调用模型整理。重复导入不会重复创建消息，后续导出补齐的附件可以补入。历史记录中的操作指令不会直接触发外部 MCP 动作。
+Always pass an explicit `library_id` per call — `daily` for the everyday library, `mantingfang` for the replay library. Importing only stores the original conversation; the model is called only after you select messages. Re-importing does not duplicate messages, and attachments added in a later export are merged in. Instruction-like text found inside imported history never triggers external MCP actions on its own.
 
-原聊天和笔记搜索默认分页返回短预览，按需读取全文，避免一次把整个资料库塞进对话。导入但尚未整理的聊天保留在原始档案中，不占满普通收件会话；笔记来源仍可直接查看原文和附近对话。
+Original-chat and note searches return short previews page by page and read full text on demand, so a whole library is never pushed into a conversation at once. Imported-but-unorganised chats stay in the original archive rather than crowding the normal inbox; note sources still open the original text and nearby turns.
 
-Alpha JSON 要保留原始消息 ID、作者、时间和 XML；附件文件及 `media-manifest.json` 保持导出时的目录结构。普通聊天对象的消息至少需要 `id`、`conversation_id`、`content`、带时区的 `created_at` 和作者信息；`is_self` 表明是否是本人原话。
+An exported JSON must keep the original message IDs, authors, timestamps and XML; attachment files and `media-manifest.json` must keep the directory layout produced by the export. A plain chat object needs at least `id`, `conversation_id`, `content`, a timezone-aware `created_at` and author information; `is_self` marks the user's own wording.
 
-## 文件在哪里
+## Where things are stored
 
-软件目录 `D:\Project\我的personal agent` 只放程序、启动文件和使用说明。
+The application directory holds only code, launchers and documentation. The actual data lives outside it, under `<drive>:\AppData\PersonalAgent` by default, set through the `PERSONAL_AGENT_DATA` environment variable:
 
-实际资料在 `D:\AppData\PersonalAgent`，独立于 Codex 和软件源码目录：
+- `personal-agent.sqlite3` — chats, notes, memory and digests.
+- `attachments` — original attachments; `notes` and `reports` — readable Markdown.
+- `config.json`, `mcp.json` — local configuration, may contain API keys.
+- `runtime`, `cache`, `logs` — Python runtime, caches and logs.
+- `libraries/mantingfang` — replay library; `archives` — exported original conversations.
 
-- `personal-agent.sqlite3`：聊天、笔记、记忆和日报。
-- `attachments`：原始附件；`notes`、`reports`：可直接阅读的 Markdown。
-- `config.json`、`mcp.json`：本机配置，可能包含密钥。
-- `runtime`、`cache`、`logs`：运行环境、缓存和运行日志。
-- `libraries/mantingfang`：满庭芳回放库；`archives`：原始聊天导出。
+To back up, stop the service first and copy the data directory (`runtime`, `cache` and `logs` can be skipped). Restore by keeping the same layout. Run `Stop.ps1` to stop the background service; reopen the launcher to start it again.
 
-备份时先停止服务，再备份资料目录（`runtime`、`cache` 和 `logs` 可不备份）。恢复时保留原目录布局。Codex 的视频分析、测试数据和临时文件均不在软件目录或正式资料库。
+## Requirements
 
-右键 `Stop.ps1`，选择“使用 PowerShell 运行”可停止后台。再次打开启动文件即可恢复。
+- Windows 10/11 with PowerShell.
+- Python 3.11 or newer. `Install.ps1` creates a virtual environment under the data directory and installs `requirements.txt` (FastAPI, uvicorn, trafilatura, pypdf, python-docx, Pillow, the MCP SDK and related packages). If `uv` is on PATH it is used, otherwise `python -m venv` and pip.
+- ffmpeg and ffprobe on PATH for audio and video parsing.
+- Google Chrome is preferred for the app window; any browser works as a fallback.
 
-本版为本机电脑端，不连接微信账户，不需要旧信息源系统运行。手机、跨设备同步和高级知识图谱可在之后继续扩展。
+## Getting started
+
+```powershell
+# first run on a new machine
+powershell -ExecutionPolicy Bypass -File .\Install.ps1
+
+# start (also available as start-personal-agent.vbs)
+powershell -ExecutionPolicy Bypass -File .\Start.ps1
+
+# open directly
+# http://127.0.0.1:8765
+```
+
+Model connections are entered in the app's settings screen; no key is hard-coded in the source.
+
+## Project layout
+
+```
+personal_agent/        FastAPI app, engine, store, connectors, MCP server
+  app.py               HTTP routes and static hosting
+  engine.py            conversation and note orchestration
+  store.py             SQLite persistence
+  connectors.py        parsing and model adapters
+  mcp_server.py        MCP server exposing the import tools
+  libraries.py         per-library isolation
+web/                   single-page front end (app.js, index.html, styles.css)
+Install.ps1            create the runtime and install dependencies
+Start.ps1 / Stop.ps1   start and stop the background service
+Start-MCP.ps1          run the stdio MCP server
+```
+
+## Limitations
+
+This is a single-machine desktop build. It does not connect to WeChat, does not require any other system to be running, and does not sync across devices. Mobile support, cross-device sync and a richer knowledge graph are possible later extensions. Digests need the machine to be on at the scheduled time.
+
+## License
+
+MIT. See `LICENSE`.
