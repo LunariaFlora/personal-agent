@@ -110,10 +110,21 @@ personal_agent/        FastAPI app, engine, store, connectors, MCP server
   mcp_server.py        MCP server exposing the import tools
   libraries.py         per-library isolation
 web/                   single-page front end (app.js, index.html, styles.css)
+tests/                 behaviour tests for storage, import and planning helpers
 Install.ps1            create the runtime and install dependencies
 Start.ps1 / Stop.ps1   start and stop the background service
 Start-MCP.ps1          run the stdio MCP server
 ```
+
+## Tests
+
+The storage, import and helper layers are tested against a temporary data directory, with no server and no model call involved:
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+They cover note creation, nesting and editing, Chinese full-text search, soft deletion, per-library isolation, memory and report records, idempotent original-chat import, attachment registration rules, and the validation that rejects malformed imported messages.
 
 ## Limitations
 
